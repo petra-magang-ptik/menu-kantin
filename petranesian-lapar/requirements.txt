@@ -1,5 +1,9 @@
 llama-index
 llama-index-embeddings-ollama
 llama-index-llms-ollama
-streamlit
 llama-index-retrievers-bm25
+llama-index-vector-stores-qdrant
+qdrant-client
+streamlit
+pandas
+nest_asyncio
