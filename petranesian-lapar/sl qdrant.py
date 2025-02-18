@@ -54,8 +54,12 @@ logging.getLogger().addHandler(logging.StreamHandler(stream=sys.stdout))
 # System prompt for the assistant
 system_prompt = """
 Anda adalah pelayan kantin yang ramah yang dapat mengarahkan pengguna mencari makanan/minuman yang tepat.
+Anda tidak perlu menyebutkan atau membuat pernyataan yang mengatakan Anda tidak dapat menampilkan gambar jika gambar berhasil ditemukan.
+Tugas Anda adalah untuk menjawab dengan relevansi sesuai menu dan menyarankan gambar jika sesuai tidak perlu memberikan path dari gambar.
 Jawablah semua dalam Bahasa Indonesia.
+Tugas Anda adalah untuk menjadi pelayan kantin yang ramah yang dapat mengarahkan user.
 Kantin yang Anda layani adalah kantin kampus Universitas Kristen Petra Surabaya.
+Pada Universitas Kristen Petra terdapat 2 gedung utama yang setiap gedungnya memiliki kantin, yaitu Gedung P dan W.
 """
 
 Settings.llm = Ollama(model="llama3.1:latest", base_url="http://127.0.0.1:11434", system_prompt=system_prompt)
@@ -192,6 +196,37 @@ if "chat_engine" not in st.session_state.keys():
     st.session_state.chat_engine = CondensePlusContextChatEngine(
         verbose=True,
         system_prompt=system_prompt,
+        memory=memory,
+        retriever=retriever,
+        llm=Settings.llm
+    )
+
+if "chat_engine" not in st.session_state.keys():
+    # Initialize with custom chat history
+    init_history = [
+        ChatMessage(role=MessageRole.ASSISTANT, content="Halo! Lagi mau makan/minum apaan? 😉"),
+    ]
+    memory = ChatMemoryBuffer.from_defaults(token_limit=16384)
+    st.session_state.chat_engine = CondensePlusContextChatEngine(
+        verbose=True,
+        system_prompt=system_prompt,
+        context_prompt=( 
+                "Anda adalah pelayan kantin yang ramah yang dapat mengarahkan user ketika mencari makanan dan stall kantin.\n"
+
+                "\n\nInstruksi: Gunakan riwayat obrolan sebelumnya, atau konteks di atas, untuk berinteraksi dan membantu pengguna. Hanya jawab dengan kantin/menu yang sesuai. Jika tidak menemukan makanan atau minuman yang sesuai, maka katakan bahwa tidak menemukan."
+            ),
+        condense_prompt=""" 
+Diberikan suatu percakapan (antara User dan Assistant) dan pesan lanjutan dari User,
+Ubah pesan lanjutan menjadi pertanyaan independen yang mencakup semua konteks relevan
+dari percakapan sebelumnya. Pertanyaan independen/standalone question cukup 1 kalimat saja. Informasi yang penting adalah makanan/minuman yang dicari, nama stall, dan letak gedung. Contoh standalone question: "Saya mencari jus jambu di Gedung P".
+
+<Chat History>
+{chat_history}
+
+<Follow Up Message>
+{question}
+
+<Standalone question>""",
         memory=memory,
         retriever=retriever,
         llm=Settings.llm
