@@ -1,0 +1,420 @@
+# https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem
+
+import argparse
+import asyncio
+import datetime
+import fnmatch
+import json
+import os
+import pathlib
+import sys
+from typing import Any, Dict, List, Optional
+
+# Ensure mcp is installed: pip install "mcp[cli]"
+# Or using uv: uv add "mcp[cli]"
+from mcp.server.fastmcp import FastMCP
+
+# --- Globals ---
+# This will be populated by command-line arguments
+ALLOWED_DIRS: List[pathlib.Path] = []
+
+# Initialize FastMCP server
+# Give it a name that clients can identify
+mcp = FastMCP("filesystem")
+
+# --- Security Helper ---
+def is_path_allowed(path_str: str) -> bool:
+    """Checks if the given path is within one of the allowed directories."""
+    try:
+        target_path = pathlib.Path(path_str).resolve()
+    except Exception:
+        # If path resolution fails, it's likely invalid or problematic
+        return False
+
+    for allowed_dir in ALLOWED_DIRS:
+        if target_path.is_relative_to(allowed_dir):
+            return True
+        # Also allow operating directly *on* an allowed directory itself
+        if target_path == allowed_dir:
+             return True
+    return False
+
+def security_check(path_str: str, check_existence: bool = False) -> pathlib.Path:
+    """
+    Performs security check and returns resolved Path object.
+    Raises ValueError if not allowed or other issues occur.
+    """
+    if not is_path_allowed(path_str):
+        raise ValueError(f"Access denied: Path '{path_str}' is outside allowed directories.")
+    resolved_path = pathlib.Path(path_str).resolve()
+    if check_existence and not resolved_path.exists():
+        raise FileNotFoundError(f"Path not found: {path_str}")
+    return resolved_path
+
+# --- Tool Implementations ---
+
+@mcp.tool()
+async def read_file(path: str) -> str:
+    """Reads the complete contents of a file using UTF-8 encoding.
+
+    Args:
+        path: The full path to the file to read.
+    """
+    checked_path = security_check(path, check_existence=True)
+    try:
+        if not checked_path.is_file():
+             raise ValueError(f"Path is not a file: {path}")
+        return checked_path.read_text(encoding='utf-8')
+    except FileNotFoundError:
+        raise FileNotFoundError(f"File not found: {path}")
+    except PermissionError:
+        raise PermissionError(f"Permission denied reading file: {path}")
+    except Exception as e:
+        raise Exception(f"Error reading file '{path}': {e}")
+
+@mcp.tool()
+async def read_multiple_files(paths: List[str]) -> str:
+    """Reads multiple files simultaneously. Failed reads won't stop the entire operation.
+
+    Args:
+        paths: A list of full paths to the files to read.
+    """
+    results = {}
+    for path_str in paths:
+        try:
+            # Reuse the single file read logic, including its security checks
+            content = await read_file(path_str)
+            results[path_str] = {"status": "success", "content": content}
+        except Exception as e:
+            results[path_str] = {"status": "error", "message": str(e)}
+
+    # Return a JSON string for structured output
+    return json.dumps(results, indent=2)
+
+
+@mcp.tool()
+async def write_file(path: str, content: str) -> str:
+    """Creates a new file or overwrites an existing file with the provided content.
+       Exercise caution: This will overwrite existing files without warning.
+
+    Args:
+        path: The full path where the file should be written.
+        content: The string content to write to the file.
+    """
+    # Security check allows writing *within* allowed dirs, not *to* the dir itself if it's a file path
+    checked_path = security_check(path, check_existence=False) # Don't require existence for write
+    try:
+        # Ensure parent directory exists
+        checked_path.parent.mkdir(parents=True, exist_ok=True)
+        # Security check parent dir as well
+        security_check(str(checked_path.parent))
+
+        checked_path.write_text(content, encoding='utf-8')
+        return f"Successfully wrote content to '{path}'."
+    except PermissionError:
+        raise PermissionError(f"Permission denied writing file: {path}")
+    except IsADirectoryError:
+         raise IsADirectoryError(f"Cannot write file: Path is a directory: {path}")
+    except Exception as e:
+        raise Exception(f"Error writing file '{path}': {e}")
+
+# NOTE: Implementing the full 'edit_file' as described (diffs, indentation, simultaneous edits)
+# is very complex. This is a simplified version using basic sequential replace.
+# A robust implementation would require significantly more logic, possibly external libs.
+@mcp.tool()
+async def edit_file(path: str, edits: List[Dict[str, str]], dryRun: bool = False) -> str:
+    """
+    Applies a series of simple text replacements to a file.
+    WARNING: This is a basic implementation. It performs sequential replacements
+    and may not handle overlapping edits, complex patterns, or preserve indentation perfectly.
+    Always use dryRun=true first to preview changes.
+
+    Args:
+        path: The full path to the file to edit.
+        edits: A list of edit operations. Each item is a dictionary with keys 'oldText' and 'newText'.
+        dryRun: If true, previews changes as a diff without applying them. (Default: false)
+    """
+    checked_path = security_check(path, check_existence=True)
+    if not checked_path.is_file():
+        raise ValueError(f"Path is not a file: {path}")
+
+    try:
+        original_content = checked_path.read_text(encoding='utf-8')
+        modified_content = original_content
+
+        for edit in edits:
+            old = edit.get("oldText")
+            new = edit.get("newText")
+            if old is None or new is None:
+                raise ValueError("Each edit must have 'oldText' and 'newText' keys.")
+            # Simple sequential replacement
+            modified_content = modified_content.replace(old, new)
+
+        if dryRun:
+            # Generate a basic diff (could use difflib for a better diff)
+            if original_content == modified_content:
+                return "Dry run: No changes detected."
+            else:
+                # Simple indication of change, a proper diff is more complex
+                diff_lines = []
+                original_lines = original_content.splitlines()
+                modified_lines = modified_content.splitlines()
+                # Rudimentary diff placeholder
+                diff_lines.append("--- Original")
+                diff_lines.extend(original_lines)
+                diff_lines.append("+++ Modified")
+                diff_lines.extend(modified_lines)
+                return f"Dry run preview:\n" + "\n".join(diff_lines)
+        else:
+            if original_content == modified_content:
+                return "No changes needed or applied."
+            else:
+                # Write the changes
+                checked_path.write_text(modified_content, encoding='utf-8')
+                return f"Successfully applied edits to '{path}'."
+
+    except FileNotFoundError:
+        raise FileNotFoundError(f"File not found: {path}")
+    except PermissionError:
+        raise PermissionError(f"Permission denied editing file: {path}")
+    except Exception as e:
+        raise Exception(f"Error editing file '{path}': {e}")
+
+
+@mcp.tool()
+async def create_directory(path: str) -> str:
+    """Creates a new directory. Creates parent directories if needed. Succeeds silently if the directory already exists.
+
+    Args:
+        path: The full path of the directory to create.
+    """
+    # Security check allows creating dirs *within* allowed dirs
+    checked_path = security_check(path, check_existence=False) # Don't require existence for create
+    try:
+        # Check parent is allowed BEFORE creating
+        security_check(str(checked_path.parent))
+        checked_path.mkdir(parents=True, exist_ok=True)
+        return f"Directory '{path}' created or already exists."
+    except PermissionError:
+        raise PermissionError(f"Permission denied creating directory: {path}")
+    except FileExistsError:
+         # Should be caught by exist_ok=True, but handle just in case path points to a file
+         if checked_path.is_file():
+             raise FileExistsError(f"Cannot create directory: A file already exists at '{path}'")
+         return f"Directory '{path}' already exists." # Should not be reached if exist_ok=True works
+    except Exception as e:
+        raise Exception(f"Error creating directory '{path}': {e}")
+
+@mcp.tool()
+async def list_directory(path: str) -> str:
+    """Lists the contents of a directory, prefixing items with [FILE] or [DIR].
+
+    Args:
+        path: The full path of the directory to list.
+    """
+    checked_path = security_check(path, check_existence=True)
+    try:
+        if not checked_path.is_dir():
+            raise NotADirectoryError(f"Path is not a directory: {path}")
+
+        contents = []
+        for item in checked_path.iterdir():
+            prefix = "[DIR] " if item.is_dir() else "[FILE]"
+            contents.append(f"{prefix} {item.name}")
+        if not contents:
+            return f"Directory '{path}' is empty."
+        return f"Contents of '{path}':\n" + "\n".join(contents)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Directory not found: {path}")
+    except NotADirectoryError:
+         raise NotADirectoryError(f"Path is not a directory: {path}")
+    except PermissionError:
+        raise PermissionError(f"Permission denied listing directory: {path}")
+    except Exception as e:
+        raise Exception(f"Error listing directory '{path}': {e}")
+
+
+@mcp.tool()
+async def move_file(source: str, destination: str) -> str:
+    """Moves or renames a file or directory. Fails if the destination already exists.
+
+    Args:
+        source: The full path of the file or directory to move.
+        destination: The full path of the new location or name.
+    """
+    source_path = security_check(source, check_existence=True)
+    dest_path = security_check(destination, check_existence=False) # Destination shouldn't exist yet
+
+    # Explicitly check if destination exists before trying to move
+    if dest_path.exists():
+        raise FileExistsError(f"Destination path '{destination}' already exists. Move failed.")
+
+    # Ensure destination parent directory is allowed and exists
+    dest_parent = dest_path.parent
+    security_check(str(dest_parent))
+    dest_parent.mkdir(parents=True, exist_ok=True)
+
+
+    try:
+        source_path.rename(dest_path)
+        return f"Successfully moved '{source}' to '{destination}'."
+    except FileNotFoundError:
+        # Should be caught by initial check, but handle defensively
+        raise FileNotFoundError(f"Source path not found: {source}")
+    except PermissionError:
+        raise PermissionError(f"Permission denied moving '{source}' to '{destination}'.")
+    except Exception as e:
+        raise Exception(f"Error moving '{source}' to '{destination}': {e}")
+
+
+@mcp.tool()
+async def search_files(path: str, pattern: str, excludePatterns: Optional[List[str]] = None) -> str:
+    """Recursively searches for files and directories matching a pattern within a specified path.
+       Supports excluding patterns using glob format. Case-insensitive matching.
+
+    Args:
+        path: The starting directory path for the search.
+        pattern: The search pattern (e.g., '*.txt', 'data*'). Glob patterns supported.
+        excludePatterns: Optional list of patterns to exclude (e.g., ['*/temp/*', '*.log']). Glob formats supported.
+    """
+    if excludePatterns is None:
+        excludePatterns = []
+
+    base_path = security_check(path, check_existence=True)
+    if not base_path.is_dir():
+        raise NotADirectoryError(f"Search path is not a directory: {path}")
+
+    matches = []
+    try:
+        # Convert exclude patterns to lowercase for case-insensitive matching
+        excludePatternsLower = [p.lower() for p in excludePatterns]
+
+        for item in base_path.rglob(pattern):
+             # Perform security check on each found item before adding
+            if not is_path_allowed(str(item)):
+                # Skip items found outside allowed scope (shouldn't happen if base_path is checked, but belt-and-suspenders)
+                continue
+
+            item_path_str_lower = str(item).lower()
+            excluded = False
+            for exclude_pattern in excludePatternsLower:
+                # Use fnmatch for glob matching, case-insensitive compare
+                if fnmatch.fnmatchcase(item_path_str_lower, exclude_pattern.lower()):
+                    excluded = True
+                    break
+            if not excluded:
+                matches.append(str(item.resolve())) # Return absolute paths
+
+        if not matches:
+            return f"No files or directories found matching '{pattern}' in '{path}' (excluding specified patterns)."
+        return f"Found matches for '{pattern}' in '{path}':\n" + "\n".join(matches)
+    except PermissionError:
+        # May occur during recursive search
+         raise PermissionError(f"Permission denied during search in '{path}'.")
+    except Exception as e:
+        raise Exception(f"Error searching in '{path}' with pattern '{pattern}': {e}")
+
+@mcp.tool()
+async def get_file_info(path: str) -> str:
+    """Gets detailed metadata for a file or directory.
+
+    Args:
+        path: The full path to the file or directory.
+    """
+    checked_path = security_check(path, check_existence=True)
+    try:
+        stat_result = checked_path.stat()
+        info = {
+            "path": str(checked_path.resolve()),
+            "type": "directory" if checked_path.is_dir() else "file",
+            "size_bytes": stat_result.st_size,
+            "created_time": datetime.datetime.fromtimestamp(stat_result.st_ctime).isoformat(),
+            "modified_time": datetime.datetime.fromtimestamp(stat_result.st_mtime).isoformat(),
+            "accessed_time": datetime.datetime.fromtimestamp(stat_result.st_atime).isoformat(),
+            # Permissions are complex and platform-dependent, omitting for simplicity
+            # "permissions": oct(stat_result.st_mode)[-3:]
+        }
+        return json.dumps(info, indent=2)
+    except FileNotFoundError:
+         raise FileNotFoundError(f"Path not found: {path}")
+    except PermissionError:
+         raise PermissionError(f"Permission denied getting info for: {path}")
+    except Exception as e:
+        raise Exception(f"Error getting info for '{path}': {e}")
+
+@mcp.tool()
+async def list_allowed_directories() -> str:
+    """Lists all the directories the server is configured to access."""
+    if not ALLOWED_DIRS:
+        return "No directories are configured for access."
+    dir_list = [str(d) for d in ALLOWED_DIRS]
+    return "Allowed directories:\n" + "\n".join(dir_list)
+
+
+# --- Main Execution ---
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="MCP Filesystem Server")
+    parser.add_argument(
+        "allowed_dirs",
+        metavar="ALLOWED_DIR",
+        type=str,
+        nargs='+',
+        help="One or more absolute directory paths the server is allowed to access."
+    )
+    parser.add_argument(
+        "--transport",
+        type=str,
+        default="stdio",
+        choices=["stdio", "sse"], # Add more if needed
+        help="MCP transport mechanism to use (default: stdio)."
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8080,
+        help="Port to use if transport is 'sse' (default: 8080)."
+    )
+
+    args = parser.parse_args()
+
+    # Validate and store allowed directories
+    for dir_path in args.allowed_dirs:
+        p = pathlib.Path(dir_path)
+        if not p.is_absolute():
+             print(f"Error: Allowed directory path must be absolute: {dir_path}", file=sys.stderr)
+             sys.exit(1)
+        if not p.exists() or not p.is_dir():
+            print(f"Error: Allowed directory path does not exist or is not a directory: {dir_path}", file=sys.stderr)
+            sys.exit(1)
+        ALLOWED_DIRS.append(p.resolve()) # Store resolved absolute paths
+
+    if not ALLOWED_DIRS:
+        print("Error: At least one allowed directory must be specified.", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Starting Filesystem MCP Server. Allowed directories:", file=sys.stderr)
+    for d in ALLOWED_DIRS:
+        print(f"- {d}", file=sys.stderr)
+    print(f"Using transport: {args.transport}", file=sys.stderr)
+    if args.transport == "sse":
+        print(f"SSE Port: {args.port}", file=sys.stderr)
+
+
+    # Initialize and run the server using the chosen transport
+    # --- Corrected part ---
+    # Build keyword arguments dynamically
+    run_kwargs = {"transport": args.transport}
+    if args.transport == "sse":
+        print(f"SSE Port: {args.port}", file=sys.stderr)
+        run_kwargs["port"] = args.port
+    # --- End corrected part ---
+
+    # Initialize and run the server using the chosen transport and conditional kwargs
+    try:
+        mcp.run(**run_kwargs) # Use ** to unpack the arguments
+    except Exception as e:
+        print(f"\nServer exited with error: {e}", file=sys.stderr)
+        # Optionally print traceback for more details during debugging
+        # import traceback
+        # traceback.print_exc(file=sys.stderr)
+        sys.exit(1)
