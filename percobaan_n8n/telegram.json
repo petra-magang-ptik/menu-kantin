@@ -1,0 +1,294 @@
+{
+  "name": "telegram",
+  "nodes": [
+    {
+      "parameters": {
+        "modelName": "models/gemini-2.5-flash-preview-04-17",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        620,
+        200
+      ],
+      "id": "e77df624-16d5-43c9-b263-7f9230557dfc",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "Yzou2tZYPQOYdlvy",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=you are a smart assistant that can summarize content of {{ $json.text }}",
+        "options": {
+          "systemMessage": "You are a smart document assistant. Given the contents of a PDF file, your task is to read and summarize the key information clearly and concisely.\n\nFocus on the main ideas, important facts, and relevant conclusions.\n\nIf the PDF is a report, summarize the objectives, findings, and recommendations.\n\nIf it's a research paper, summarize the abstract, methodology, results, and conclusion.\n\nIf it's a manual or guide, provide a section-by-section summary highlighting critical instructions or features.\n\nOutput the summary in clear bullet points or short paragraphs, depending on the document type.\n\nIgnore repetitive footers/headers, page numbers, or metadata unless they contain relevant content.\n\nlimit it under 4,096 characters"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.9,
+      "position": [
+        640,
+        -40
+      ],
+      "id": "738e30f4-fb22-4fd0-a5c5-5bed18115e33",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "fileId": "={{ $json.message.document.file_id }}"
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        220,
+        -40
+      ],
+      "id": "020efdca-d0e4-4444-92c2-c921812fec32",
+      "name": "Telegram1",
+      "webhookId": "93006ff8-a8a4-436a-926c-f3d578a7939d",
+      "credentials": {
+        "telegramApi": {
+          "id": "ZcuFnzaajWBcVjFw",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        420,
+        -20
+      ],
+      "id": "54a9c608-3b38-4432-b823-8b1fa554ee1a",
+      "name": "Extract from File"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Telegram Trigger').item.json.message.from.id }}",
+        "text": "={{ $json.output }}",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1020,
+        -20
+      ],
+      "id": "323be5ba-e770-42ff-8d53-3225b44a4c19",
+      "name": "Telegram",
+      "webhookId": "174cdbf5-9259-4619-8cde-8242b0ea2318",
+      "credentials": {
+        "telegramApi": {
+          "id": "ZcuFnzaajWBcVjFw",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.message.document.mime_type }}",
+                    "rightValue": "application/pdf",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "85e74b2f-c532-4641-b6a9-bdd9df10bc93"
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "d348a2ee-d787-4565-8cec-60671cbc947b",
+                    "leftValue": "={{ $json.message.document.mime_type }}",
+                    "rightValue": "application/pdf",
+                    "operator": {
+                      "type": "string",
+                      "operation": "notEquals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        20,
+        -40
+      ],
+      "id": "543c0424-bda7-45bd-b251-40fff103c645",
+      "name": "Switch"
+    },
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {
+          "download": true
+        }
+      },
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -200,
+        -60
+      ],
+      "id": "ccc27b33-826c-4109-8696-208167a8427b",
+      "name": "Telegram Trigger",
+      "webhookId": "babb3376-dd92-4873-ad62-2a67915b12e9",
+      "credentials": {
+        "telegramApi": {
+          "id": "ZcuFnzaajWBcVjFw",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Telegram Trigger').item.json.message.from.id }}",
+        "text": "=please send a pdf",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        200,
+        160
+      ],
+      "id": "b42f2686-a6c8-4596-b47a-ab75a5a93e9b",
+      "name": "Telegram2",
+      "webhookId": "174cdbf5-9259-4619-8cde-8242b0ea2318",
+      "credentials": {
+        "telegramApi": {
+          "id": "ZcuFnzaajWBcVjFw",
+          "name": "Telegram account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram1": {
+      "main": [
+        [
+          {
+            "node": "Extract from File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from File": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch": {
+      "main": [
+        [
+          {
+            "node": "Telegram1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "21c9bac9-a829-4311-b879-d64d3520d8a6",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "558d88703fb65b2d0e44613bc35916258b0f0bf983c5d4730c00c424b77ca36a"
+  },
+  "id": "hLeuoD3MfOE7In2D",
+  "tags": []
+}
